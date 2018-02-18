@@ -1,0 +1,29 @@
+import groovy.json.JsonSlurper
+
+// Assert HTTP Status code and Content-Type
+def http_status = messageExchange.responseHeaders["#status#"][0]
+def http_content_type = messageExchange.responseHeaders["Content-Type"][0]
+context.testCase.testSuite.project.setPropertyValue("result", http_status)
+
+def slurper = new JsonSlurper()
+def response = slurper.parseText(messageExchange.responseContent)
+
+try {
+  context.testCase.testSuite.project.setPropertyValue("userMessage", response.userMessage)
+} 
+catch (Exception e) {}
+
+assert http_status.contains("201 Created")
+assert http_content_type.contains ("application/json")
+
+/* 
+ * Assert JSON Request message 
+ */
+
+assert response instanceof Map
+assert response.id != null
+assert response.interactionStatus.type == "Start"
+assert response.interactionStatus.name == "Received"
+assert response.type == "Change"
+
+context.testCase.testSuite.project.setPropertyValue("ChangeProductOrderID",response.id)
