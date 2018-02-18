@@ -1,0 +1,179 @@
+import groovy.json.JsonSlurper
+import com.eviware.soapui.impl.wsdl.panels.support.MockTestSuiteRunner;
+import com.eviware.soapui.impl.wsdl.panels.support.MockTestSuiteRunContext;
+
+def groovyUtils        = new com.eviware.soapui.support.GroovyUtils( context );
+def pathMain           = ((groovyUtils.projectPath).replaceAll("\\\\","\\\\\\\\")+"\\\\");
+def todaystr           = new Date();
+def dateformat         = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+def timestamp          = dateformat.format(todaystr);
+def pathDebugFile      = pathMain+"BulkOrderUploadResults\\\\DebugLog-" + timestamp+".csv";
+def DebugFileHandle    = new File(pathDebugFile).newWriter(true);
+def pathResultFile     = pathMain+"BulkOrderUploadResults\\\\ResultLog-" + timestamp+".csv";
+def ResultFileHandle   = new File(pathResultFile).newWriter(true);
+def projectDir         = context.expand('${projectDir}') + File.separator
+def slurper            = new JsonSlurper()
+def tcGet              = context.testCase.testSuite.getTestCaseByName("GetTokenAndGetInventory")
+def tcCPO              = context.testCase.testSuite.getTestCaseByName("ChangeProductOrder")
+def currentTestSuite   = testRunner.testCase.getTestSuite();
+def currentProject     = currentTestSuite.getProject();
+def dataFile           = currentProject.getPropertyValue("InputFile")  
+def teststring
+// this file needs to contain a list of active PIIDs that have no inflight orders against
+
+//Reading Input File
+try 
+{
+  File file = new File(projectDir + dataFile)
+  context.data = file.readLines()
+  context.dataCount = context.data.size
+  DebugFileHandle.writeLine("Input file: " + dataFile + " - data count: " + context.dataCount)
+  context.index = 0; //index to read data array in sequence
+} 
+catch (Exception e) 
+{
+  testRunner.fail("Failed to load " + dataFile + " from project directory " + projectDir)
+  DebugFileHandle.writeLine("Failed to load " + dataFile + " from project directory " + projectDir + ": " + e)
+  log.info "Failed to load " + dataFile + " from project directory " + projectDir
+  DebugFileHandle.close()
+  ResultFileHandle.close()
+  return
+}
+
+
+//Execute Create Change Product Order
+DebugFileHandle.writeLine("   -------------- Start Loop --------------  ")
+ResultFileHandle.writeLine(timestamp + ",sn,starting process,PIID,Change Product Order,Customer Reference")
+
+for(int i=0; i <context.data.size; i++){	
+
+  try {
+//interrupt or delay execution as desired
+          if (currentProject.getPropertyValue("Interrupt-Flag") == 'yes') {
+               DebugFileHandle.writeLine("Aborting processing loop with Interrupt-Flag = yes")
+               ResultFileHandle.writeLine(timestamp + ",aborted processing,InterruptFlag = yes")
+               log.info "Execution stopped"
+               DebugFileHandle.close()
+               ResultFileHandle.close()
+               return
+          }
+          sleep (currentProject.getPropertyValue("Delay-ms") as int)
+
+          todaystr   = new Date();
+          dateformat = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+          timestamp  = dateformat.format(todaystr);
+             	    
+//process one PIID at a time
+          String[] sections = context.data[i].split(",")
+		DebugFileHandle.writeLine("---");
+          DebugFileHandle.writeLine("Processing row: " + (i+1) + "   PIID: " + sections[0]);
+          log.info "Processing row: " + (i+1) + "   PIID: " + context.data[i]
+          
+// validate file input for PIID and Customer Reference
+          try {if (sections[0].trim() == "" || sections[1].trim() == "") {
+		          DebugFileHandle.writeLine("input parameters are missing: " + context.data[i]);
+		          ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",missing parameters," + context.data[i])
+		          continue;
+		         }
+              }      
+              catch (Exception e) {
+                    DebugFileHandle.writeLine("xxx-input parameters are missing: " + context.data[i]);
+		          ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",xxx-missing parameters," + context.data[i])
+		          continue;             	
+                	}   
+
+// Execute GetToken and GetInventory - save and update element describedBy
+         // reset parameters
+         currentProject.setPropertyValue("result","");
+         currentProject.setPropertyValue("status","");
+         currentProject.setPropertyValue("token","invalid");
+         currentProject.setPropertyValue("OrigOrderID","");
+         currentProject.setPropertyValue("userMessage","");
+         currentProject.setPropertyValue("LocationID","");
+         currentProject.setPropertyValue("FullDescribedBy","");
+         currentProject.setPropertyValue("BusinessName","");
+         currentProject.setPropertyValue("IsBusiness","no");
+         currentProject.setPropertyValue("CustomerPTR","");
+	    currentProject.setPropertyValue("ProdOfferingID","");
+	    currentProject.setPropertyValue("CustRef",sections[1]);
+          
+         //set PIID
+         currentProject.setPropertyValue("PIID", sections[0])
+
+         // execute requests
+         properties = new com.eviware.soapui.support.types.StringToObjectMap ()
+	    async = false
+	    tcGet.run (properties, async)
+         // validate response of GetInventory and GetInventoryHistory
+		if (currentProject.getPropertyValue("result") != "HTTP/1.1 200 OK") {
+		   DebugFileHandle.writeLine("GetInventory failure: " +
+		     currentProject.getPropertyValue("result") + " " + currentProject.getPropertyValue("userMessage"));
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",GetInventory failure," + sections[0]);		                         
+		   continue;
+		}         
+		if (currentProject.getPropertyValue("CustomerPTR") != currentProject.getPropertyValue("MyRepublicPTR")) {
+		   DebugFileHandle.writeLine("GetInventory: PIID is not MyRepublic");
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",GetInventory failure," + sections[0]);		                         
+		   continue;
+		}	         
+		if (currentProject.getPropertyValue("IsBusiness") != "no") {
+		   DebugFileHandle.writeLine("GetInventory: PIID was rejected: " + currentProject.getPropertyValue("IsBusiness"));
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",GetInventory failure," + sections[0]);		                         
+		   continue;
+		}
+		if (currentProject.getPropertyValue("status") == "Inactive" || currentProject.getPropertyValue("status") == "Pending") {
+		   DebugFileHandle.writeLine("GetInventory: PIID is not active");
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",GetInventory failure," + sections[0]);		                         
+		   continue;
+		}		
+		if (currentProject.getPropertyValue("LocationID") == "" ||
+		    currentProject.getPropertyValue("OrigOrderID") == "") {
+		   DebugFileHandle.writeLine("GetInventory did not return all required info: " +
+		     currentProject.getPropertyValue("result") + " " + currentProject.getPropertyValue("userMessage") + " " +
+		     currentProject.getPropertyValue("LocationID") + " " + currentProject.getPropertyValue("OrigOrderID"));
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",GetInventory failure," + sections[0]);		                         
+		   continue;
+		}
+		DebugFileHandle.writeLine("GetInventory returned all required info: " + 
+		       currentProject.getPropertyValue("result") + " " + currentProject.getPropertyValue("LocationID") + " " +
+		       currentProject.getPropertyValue("OrigOrderID"));
+
+// execute to Create New Change Product Order	    
+         // reset parameters
+         sleep (1000);
+         currentProject.setPropertyValue("result","");
+         currentProject.setPropertyValue("userMessage","");
+         currentProject.setPropertyValue("ChangeProductOrderID","");
+         // execute request
+	    DebugFileHandle.writeLine("About to create new Change Product Order for PIID " + sections[0] + " and CustRef " + sections[1])
+ 	    properties = new com.eviware.soapui.support.types.StringToObjectMap ()
+	    async = false
+	    tcCPO.run (properties, async)
+	    //validate response of Create New Order request
+		if (currentProject.getPropertyValue("result") != "HTTP/1.1 201 Created" ||
+		    currentProject.getPropertyValue("ChangeProductOrderID") == "") {
+		   DebugFileHandle.writeLine("Create new Change Product Order unsuccessful: " + currentProject.getPropertyValue("result") + " " 
+		   + currentProject.getPropertyValue("userMessage") + " " + currentProject.getPropertyValue("ChangeProductOrderID"));
+		   ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",Create CPOrder failure," + sections[0] + "," + currentProject.getPropertyValue("ChangeProductOrderID"))
+		   continue;
+		}
+		DebugFileHandle.writeLine("Create new CPOrder successful: " + currentProject.getPropertyValue("result") + " " + currentProject.getPropertyValue("ChangeProductOrderID"));
+
+ // write output
+         ResultFileHandle.writeLine(timestamp + "," + [i+1] + ",success," + sections[0] + "," + currentProject.getPropertyValue("ChangeProductOrderID") 
+                                    + "," + currentProject.getPropertyValue("CustRef") + "-MR1G")
+
+}
+catch (Exception e) {
+	DebugFileHandle.writeLine("Aborted due to unexpected error: " + e);
+	DebugFileHandle.close();
+     ResultFileHandle.close();
+     break;}
+} 
+
+try {
+DebugFileHandle.writeLine("   -------------- End Loop --------------  ")
+DebugFileHandle.close();
+ResultFileHandle.close();
+}
+catch (Exception e) {}
